@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+google-genai
+pydantic
+python-dotenv
+playwright
+browser-use
+nest-asyncio
+requests
