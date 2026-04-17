@@ -287,8 +287,8 @@ def process_pdf_bytes(pdf_bytes, oem_name):
     - Volume: Use only "Automobile" business. IGNORE Motorcycles.
     """
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        #model="gemini-3.1-flash-lite-preview",
+        #model="gemini-2.5-flash",
+        model="gemini-3.1-flash-lite-preview",
         contents=[gemini_file, prompt],
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=ReportSchema, temperature=0.0),
     )
@@ -319,7 +319,7 @@ def main():
 
         st.divider()
         headless_mode = st.toggle("Headlessモード", value=True)
-        start_button = st.button("探索・解析を開始", type="primary", use_container_width=True)
+        start_button = st.button("探索・解析を開始", type="primary", width='stretch')
 
     if start_button:
         if not VIO_TOKEN or not GEMINI_KEY:
@@ -396,7 +396,7 @@ def main():
                 }, na_rep="-")
                 .background_gradient(subset=["Margin"], cmap="Greens", vmin=0, vmax=12)
                 .map(lambda x: 'color: #E74C3C; font-weight: bold;' if isinstance(x, (int, float)) and x < 0 else '', subset=["OpIncome"]),
-                use_container_width=True, hide_index=True
+                width='stretch', hide_index=True
             )
 
             # 2. 比較グラフ
@@ -412,14 +412,14 @@ def main():
                 fig_rev.add_trace(go.Bar(name='Prior Year', x=df_prior["Company"], y=df_prior["Revenue"], marker_color='#FFB399'))
                 fig_rev.add_trace(go.Bar(name='Current Year', x=df_current["Company"], y=df_current["Revenue"], marker_color='#FF4500'))
                 fig_rev.update_layout(title="<b>Revenue</b> (Billion JPY)", barmode='group', paper_bgcolor='#F2F2F2', plot_bgcolor='#F2F2F2')
-                st.plotly_chart(fig_rev, use_container_width=True)
+                st.plotly_chart(fig_rev, width='stretch')
 
             with c2: # OpIncome 比較
                 fig_inc = go.Figure()
                 fig_inc.add_trace(go.Bar(name='Prior Year', x=df_prior["Company"], y=df_prior["OpIncome"], marker_color='#A992E2'))
                 fig_inc.add_trace(go.Bar(name='Current Year', x=df_current["Company"], y=df_current["OpIncome"], marker_color='#483D8B'))
                 fig_inc.update_layout(title="<b>Operating Income</b> (Billion JPY)", barmode='group', paper_bgcolor='#F2F2F2', plot_bgcolor='#F2F2F2')
-                st.plotly_chart(fig_inc, use_container_width=True)
+                st.plotly_chart(fig_inc, width='stretch')
 
 if __name__ == "__main__":
     main()
