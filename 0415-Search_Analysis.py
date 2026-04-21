@@ -63,7 +63,7 @@ class ReportSchema(BaseModel):
 OEM_CONFIG = {
     "Toyota": {"JP_name": "トヨタ自動車", "filename": "決算報告プレゼンテーション資料", "analysis_note": "標準的な連結数値を抽出してください。"},
     "Nissan": {"JP_name": "日産自動車", "filename": "プレゼンテーション資料", "analysis_note": "連結ベースの数値を優先してください。"},
-    "Honda": {"JP_name": "本田技研工業", "filename": "決算説明会資料", "analysis_note": "四輪事業の数値を抽出してください。"},
+    "Honda": {"JP_name": "本田技研工業", "filename": "決算説明会資料", "analysis_note": ""},
     "Mazda": {"JP_name": "マツダ株式会社", "filename": "プレゼンテーション資料", "analysis_note": "グローバル販売台数と連結財務数値を抽出してください。"},
     "Mitsubishi": {"JP_name": "三菱自動車", "filename": "プレゼンテーション資料", "analysis_note": "連結財務数値を抽出してください。"},
     "Suzuki": {"JP_name": "スズキ株式会社", "filename": "決算説明会", "analysis_note": "四輪事業を主軸に数値を抽出してください。"},
@@ -75,7 +75,7 @@ OEM_CONFIG = {
 TAB_CONTROL_OEMS = ["Nissan", "Mazda"]
 
 # =========================================================
-# 補助クラス・関数 (探索用 - 0415-Streamlit.py 完全復元)
+# 補助クラス・関数 (探索用)
 # =========================================================
 def classify_page(url: str) -> str:
     u = url.lower()
@@ -111,6 +111,7 @@ async def handle_cookie_banner(page, log_func):
 
 async def extract_links(page) -> List[dict]:
     if page.url.lower().endswith(".pdf"): return []
+    # 修正点：endswith -> endsWith (JavaScriptの正しい構文)
     return await page.evaluate("""
     () => Array.from(document.querySelectorAll("a"))
       .filter(a => {
@@ -134,16 +135,16 @@ async def llm_decide(llm, current_url, links, company_name, period, alt_period, 
     is_interactive = oem_choice in TAB_CONTROL_OEMS
     tab_rule = "- 目的の年度が表示されていない場合は、年度タブの切り替え(action='click', href=null)を最優先してください。" if is_interactive else ""
     prompt = f"""
-あなたはWeb操作の判断エージェントです。必ずJSONで回答してください。
-目的：{company_name} の {period}（別名: {alt_period}）の「{filename}」PDFを見つけること。
-【重要ルール】
-- 「{period}」と「{alt_period}」は全く同じ対象を指しています。
-- リンク一覧で「(★既にこのページにいます)」と書かれたリンクを再度クリックしても無意味です。
-{tab_rule}
-返答形式： {{{{ "action": "click", "href": "..." }}}} または {{{{ "action": "done", "pdf_url": "..." }}}}
+    あなたはWeb操作の判断エージェントです。必ずJSONで回答してください。
+    目的：{company_name} の {period}（別名: {alt_period}）の「{filename}」PDFを見つけること。
+    【重要ルール】
+    - 「{period}」と「{alt_period}」は同じ対象を指しています。
+    - リンク一覧で「(★既にこのページにいます)」と書かれたリンクを再度クリックしても無意味です。
+    {tab_rule}
+    返答形式： {{{{ "action": "click", "href": "..." }}}} または {{{{ "action": "done", "pdf_url": "..." }}}}
 
-リンク一覧：{json.dumps(links, ensure_ascii=False)}
-"""
+    リンク一覧：{json.dumps(links, ensure_ascii=False)}
+    """
     log_func(f"🧠 [LLM] 判断中... (候補リンク数: {len(links)} 件)")
     response = await llm.ainvoke([UserMessage(content=prompt)])
     content = response.content if hasattr(response, "content") else str(response)
@@ -152,11 +153,11 @@ async def llm_decide(llm, current_url, links, company_name, period, alt_period, 
 
 async def llm_judge_pdf_match(llm, company_name, period, alt_period, filename, pdf_candidates, log_func):
     prompt = f"""あなたは資料判定アシスタントです。
-目的：{company_name} の 「{period}」（別名: {alt_period}）の 「{filename}」として正しいPDFを1つ選んでください。
-【最重要ルール】
-- 「{period}」と「{alt_period}」は全く同じ対象です。
-候補：{json.dumps([{"index": i, "text": p["text"], "url": p["href"]} for i, p in enumerate(pdf_candidates)], ensure_ascii=False)}
-回答形式：{{{{ "match": true, "index": <番号> }}}} または {{{{ "match": false }}}}"""
+    目的：{company_name} の 「{period}」（別名: {alt_period}）の 「{filename}」として正しいPDFを1つ選んでください。
+    【最重要ルール】
+    - 「{period}」と「{alt_period}」は全く同じ対象です。
+    候補：{json.dumps([{"index": i, "text": p["text"], "url": p["href"]} for i, p in enumerate(pdf_candidates)], ensure_ascii=False)}
+    回答形式：{{{{ "match": true, "index": <番号> }}}} または {{{{ "match": false }}}}"""
     log_func("🧠 [LLM] PDF精密一致判定中...")
     response = await llm.ainvoke([UserMessage(content=prompt)])
     content = response.content if hasattr(response, "content") else str(response)
@@ -166,7 +167,7 @@ async def llm_judge_pdf_match(llm, company_name, period, alt_period, filename, p
     except: return None
 
 # =========================================================
-# メイン探索ロジック (run_search - 0415-Streamlit.py 完全復元)
+# メイン探索ロジック
 # =========================================================
 async def run_search(oem_choice, period, log_area, headless):
     current_logs = []
@@ -254,46 +255,57 @@ async def run_search(oem_choice, period, log_area, headless):
             await browser.close()
 
 # =========================================================
-# AI 解析ロジック (Multi-OEM.py プロンプト維持)
+# AI 解析ロジック (503エラー対策リトライ実装)
 # =========================================================
 def process_pdf_bytes(pdf_bytes, oem_name):
     config = OEM_CONFIG[oem_name]
     client = genai.Client(api_key=GEMINI_KEY)
-    gemini_file = client.files.upload(file=io.BytesIO(pdf_bytes), config={'mime_type': 'application/pdf'})
 
-    prompt = f"""
-    Extract financial and regional sales results by following these strict logical rules.
-    Specific Note for this OEM: {config['analysis_note']}
+    # 修正点：リトライループの追加
+    for attempt in range(3):
+        gemini_file = client.files.upload(file=io.BytesIO(pdf_bytes), config={'mime_type': 'application/pdf'})
+        try:
+            prompt = f"""
+            Extract financial and regional sales results by following these strict logical rules.
+            Specific Note for this OEM: {config['analysis_note']}
 
-    【1. UNIT CONVERSION LOGIC】
-    Target currency unit: "Billion JPY" (1,000,000,000 JPY).
-    Identify the unit label (百万円, 億円, 兆円) and apply:
-    - Millions (百万円): Value / 1,000
-    - 100 Millions (億円): Value / 10
-    - Trillions (兆円): Value * 1,000
+            【1. UNIT CONVERSION LOGIC】
+            Target currency unit: "Billion JPY" (1,000,000,000 JPY).
+            Identify the unit label (百万円, 億円, 兆円) and apply:
+            - Millions (百万円): Value / 1,000
+            - 100 Millions (億円): Value / 10
+            - Trillions (兆円): Value * 1,000
 
-    【2. PERCENTAGE FORMAT RULE】
-    - For "operating_margin_pct", extract the value as a whole percentage number (e.g., 8.1).
+            【2. PERCENTAGE FORMAT RULE】
+            - For "operating_margin_pct", extract the value as a whole percentage number (e.g., 8.1).
 
-    【3. ISUZU-STYLE SEGMENT INTEGRATION】
-    - You MUST find the regional data for EACH segment and SUM them to calculate the total regional sales.
-    
-    【4. REGIONAL MAPPING DEFINITION】
-    - "asia_excl_japan": Sum of all Asia regions but EXCLUDING Japan.
-    - "other": Sum of all remaining regions (Middle East, Africa, Oceania, Central/South America).
+            【3. ISUZU-STYLE SEGMENT INTEGRATION】
+            - You MUST find the regional data for EACH segment and SUM them to calculate the total regional sales.
+            
+            【4. REGIONAL MAPPING DEFINITION】
+            - "asia_excl_japan": Sum of all Asia regions but EXCLUDING Japan.
+            - "other": Sum of all remaining regions (Middle East, Africa, Oceania, Central/South America).
 
-    【5. DATA HIERARCHY】
-    - Financials (Revenue/Income): Use top-level "Consolidated" totals only.
-    - Volume: Use only "Automobile" business. IGNORE Motorcycles.
-    """
-    response = client.models.generate_content(
-        #model="gemini-2.5-flash",
-        model="gemini-3.1-flash-lite-preview",
-        contents=[gemini_file, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=ReportSchema, temperature=0.0),
-    )
-    client.files.delete(name=gemini_file.name)
-    return response.parsed
+            【5. DATA HIERARCHY】
+            - Financials (Revenue/Income): Use top-level "Consolidated" totals only.
+            - Volume: Use only "Automobile" business. IGNORE Motorcycles.
+            """
+            response = client.models.generate_content(
+                model="gemini-3.1-flash-lite-preview",
+                contents=[gemini_file, prompt],
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=ReportSchema, temperature=0.0),
+            )
+            client.files.delete(name=gemini_file.name)
+            return response.parsed
+        except Exception as e:
+            # 修正点：リトライ判断
+            if gemini_file:
+                try: client.files.delete(name=gemini_file.name)
+                except: pass
+            if ("503" in str(e) or "overloaded" in str(e).lower()) and attempt < 2:
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise e
 
 # =========================================================
 # Streamlit UI & メインオーケストレーション
@@ -326,10 +338,8 @@ def main():
             st.error("APIキーが不足しています。")
             return
 
-        # 全結果を格納するためのリスト
         all_results_rows = []
 
-        # 各社の処理（ステータス表示用）
         for i, oem in enumerate(selected_oems):
             company_jp = OEM_CONFIG[oem]["JP_name"]
             
@@ -349,7 +359,6 @@ def main():
                 try:
                     res_data = process_pdf_bytes(pdf_resp.content, oem)
                     
-                    # データを1行ずつリストに追加
                     periods_map = [
                         (res_data.prior_h1_actual, 'Prior Year (H1)'), 
                         (res_data.h1_actual, 'Current Year (H1)'), 
@@ -372,7 +381,6 @@ def main():
                 except Exception as e:
                     st.error(f"{company_jp} 解析エラー: {e}")
 
-            # 10秒待機
             if i < len(selected_oems) - 1:
                 wait_box = st.empty()
                 for r in range(10, 0, -1):
@@ -380,13 +388,11 @@ def main():
                     time.sleep(1)
                 wait_box.empty()
 
-        # --- 全社完了後のまとめ表示 ---
         if all_results_rows:
             st.divider()
             st.header("📊 全社集計結果")
             df = pd.DataFrame(all_results_rows)
 
-            # 1. 総合テーブル
             st.subheader("📋 財務データ一覧")
             st.dataframe(
                 df.style.format({
@@ -399,13 +405,14 @@ def main():
                 width='stretch', hide_index=True
             )
 
-            # 2. 比較グラフ
             st.subheader("📈 メーカー間比較 (H1実績)")
             c1, c2 = st.columns(2)
             
-            # グラフ用に当期(Current H1)と前期(Prior H1)のデータを抽出
-            df_current = df[df["Period"] == "Current Year (H1)"]
-            df_prior = df[df["Period"] == "Prior Year (H1)"]
+            # 修正点：売上高順にソートするロジック
+            df_current = df[df["Period"] == "Current Year (H1)"].copy().sort_values(by="Revenue", ascending=False)
+            df_prior_raw = df[df["Period"] == "Prior Year (H1)"].copy()
+            ordered_companies = df_current["Company"].tolist()
+            df_prior = df_prior_raw.set_index("Company").reindex(ordered_companies).reset_index()
 
             with c1: # Revenue 比較
                 fig_rev = go.Figure()
