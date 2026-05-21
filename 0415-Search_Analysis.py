@@ -191,7 +191,7 @@ async def run_search(oem_choice, period, log_area, headless):
     visited = set()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=headless) 
+        browser = await pw.chromium.launch(headless=headless, channel="msedge")
         page = await browser.new_page()
 
         try:
@@ -291,7 +291,7 @@ def process_pdf_bytes(pdf_bytes, oem_name):
             - Volume: Use only "Automobile" business. IGNORE Motorcycles.
             """
             response = client.models.generate_content(
-                model="gemini-3.1-flash-lite-preview",
+                model="gemini-3.1-flash-lite",
                 contents=[gemini_file, prompt],
                 config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=ReportSchema, temperature=0.0),
             )
