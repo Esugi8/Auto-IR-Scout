@@ -10,6 +10,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 from pydantic import BaseModel
+import re
 
 # 一番最初のコードと同じインポート
 from langchain_openai import ChatOpenAI
@@ -60,13 +61,6 @@ OEM_CONFIG = {
 ### =========================================================
  
 def normalize_regional_data(md_text: str):
-    region_keys = [
-        "japan",
-        "north_america",
-        "europe",
-        "asia_excl_japan",
-        "other"
-    ]
 
     numbers = re.findall(r"\b\d{2,5}(?:,\d{3})*\b", md_text)
     numbers = [int(n.replace(",", "")) for n in numbers]
@@ -74,10 +68,47 @@ def normalize_regional_data(md_text: str):
     if len(numbers) < 10:
         return None
 
+    # PDFの積み上げ順（下→上）
+    stack_order = [
+        "other",
+        "asia_excl_japan",
+        "europe",
+        "north_america",
+        "japan"
+    ]
+
+    def reorder(nums):
+        raw = dict(zip(stack_order, nums))
+        return {
+            "japan": raw["japan"],
+            "north_america": raw["north_america"],
+            "europe": raw["europe"],
+            "asia_excl_japan": raw["asia_excl_japan"],
+            "other": raw["other"],
+        }
+
     return {
-        "prior": dict(zip(region_keys, numbers[:5])),
-        "current": dict(zip(region_keys, numbers[5:10]))
+        "prior": reorder(numbers[:5]),
+        "current": reorder(numbers[5:10])
     }
+
+def extract_regional_sales_llm(llm, markdown_text):
+    prompt = f"""
+以下のテキストから地域と販売台数のペアをJSONで抽出せよ。
+
+【制約】
+- キーは必ず以下のみ使用：
+  japan, north_america, europe, asia_excl_japan, other
+- 数値は整数にする
+- 不明な場合はnullにする
+- 推測しない
+
+テキスト:
+{markdown_text}
+"""
+
+    response = llm.invoke(prompt)
+    return response.content
 
 # =========================================================
 # ロジック1: ローカルで PDF -> Markdown 変換
@@ -107,57 +138,55 @@ def analyze_with_vio(markdown_text, oem_name):
         temperature=0
     )
 
-    
-    # ★ここだけ追加（前置するだけ）
-    normalized = normalize_regional_data(markdown_text)
-    if normalized:
-        markdown_text = (
-            "[STRUCTURED_REGION_DATA]
-            json.dumps(normalized, ensure_ascii=False) 
-            "
-            markdown_text
-        )
+    # メーカーごとの「必勝ロジック」を定義
+    if oem_name == "Toyota":
+        specific_logic = """
+        【TOYOTA MAPPING RULE】
+        - Legend order: 日本 (Japan), 北米 (North America), 欧州 (Europe), アジア (Asia), その他 (Other).
+        - This order matches the stacked bar chart from TOP to BOTTOM.
+        - Mapping: 970=Japan, 1533=NA, 573=Europe, 853=Asia, 854=Other. (for Current H1)
+        """
+    elif oem_name == "Honda":
+        specific_logic = """
+        【HONDA MAPPING RULE】
+        - Focus on the "Automobile" (四輪事業) table.
+        - Regions are usually listed in a table. Match labels (Japan, North America, etc.) directly.
+        - Ignore Motorcycle (二輪) figures.
+        """
+    else:
+        specific_logic = "Identify the legend and table structure to map regions correctly."
 
-
-    # プロンプトをより厳格に
     prompt = f"""
-    Extract financial results for {oem_name} from the Markdown text.
-    You MUST return the data in the EXACT JSON format shown below. 
-    Do not change the key names. Do not use names like "volume_kunits" or "company".
+    Extract financial and regional sales results for {oem_name} ({config['JP_name']}) from the Markdown text.
+    
+    {specific_logic}
+
+    【CRITICAL RULE: NO NULLS】
+    - All financial fields (revenue, income, volume, etc.) MUST be numbers (float).
+    - If a value is missing, use 0.0. NEVER use "null" or "None".
 
     【STRICT JSON TEMPLATE】
+    Return ONLY a valid JSON object. 
     {{
-      "company_name": "string",
+      "company_name": "{config['JP_name']}",
       "prior_h1_actual": {{
-        "revenue": 0.0,
-        "operating_income": 0.0,
-        "operating_margin_pct": 0.0,
-        "volume": 0.0,
+        "revenue": 0.0, "operating_income": 0.0, "operating_margin_pct": 0.0, "volume": 0.0,
         "regional_sales": {{
           "japan": 0.0, "north_america": 0.0, "europe": 0.0, "asia_excl_japan": 0.0, "other": 0.0
         }}
       }},
       "h1_actual": {{
         "revenue": 0.0, "operating_income": 0.0, "operating_margin_pct": 0.0, "volume": 0.0,
-        "regional_sales": {{ ... }}
+        "regional_sales": {{ "japan": 0.0, "north_america": 0.0, "europe": 0.0, "asia_excl_japan": 0.0, "other": 0.0 }}
       }},
       "full_year_forecast": {{
         "revenue": 0.0, "operating_income": 0.0, "operating_margin_pct": 0.0, "volume": 0.0,
-        "regional_sales": {{ ... }}
+        "regional_sales": {{ "japan": 0.0, "north_america": 0.0, "europe": 0.0, "asia_excl_japan": 0.0, "other": 0.0 }}
       }}
     }}
 
-    【RULES】
-    
-    1. UNIT: Convert all money values to "Billion JPY".
-    - Millions (百万円) -> Value / 1,000
-    - 100 Millions (億円) -> Value / 10
-    - Trillions (兆円) -> Value * 1,000
-    2. MARGIN: Operating margin as a percentage (e.g., 8.5).
-    3. REGIONS: 
-       - "asia_excl_japan": All Asia except Japan.
-       - "other": Sum of Middle East, Africa, Oceania, and Latin America.
-    4. Return result in valid JSON ONLY matching the defined schema.
+    【OEM SPECIFIC NOTE】
+    {config['analysis_note']}
 
     【MARKDOWN TEXT】
     {markdown_text[:40000]}
@@ -166,17 +195,15 @@ def analyze_with_vio(markdown_text, oem_name):
     response = llm.invoke(prompt)
     raw_content = response.content
     
-    # JSONの切り出し
     try:
         start_idx = raw_content.find('{')
         end_idx = raw_content.rfind('}') + 1
         json_str = raw_content[start_idx:end_idx]
         data_dict = json.loads(json_str)
-        
-        # Pydanticモデルへ変換（ここでエラーが出るのを防ぐために、不足キーの補完を検討しても良いですが、まずは厳格化で対応）
         return ReportSchema(**data_dict)
     except Exception as e:
-        st.error(f"AIの応答形式が不正です。生データ: {raw_content[:500]}")
+        st.error(f"解析エラー: {e}")
+        st.code(raw_content) 
         raise e
 
 # =========================================================
