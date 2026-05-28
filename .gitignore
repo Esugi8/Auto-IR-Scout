@@ -1,0 +1,8 @@
+
+# Python Virtual Environment 
+.venv/ 
+venv/ 
+.streamlit/ 
+__pycache__/ 
+API.env
+*.log
