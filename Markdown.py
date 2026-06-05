@@ -2,7 +2,7 @@ import os
 import json
 import pandas as pd
 import plotly.graph_objects as go
-import pymupdf4llm  # ローカルPDF解析
+import pymupdf4llm
 import tempfile
 from typing import Optional
 from pathlib import Path
@@ -10,9 +10,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 from pydantic import BaseModel
-import re
 
-# 一番最初のコードと同じインポート
 from langchain_openai import ChatOpenAI
 
 # =========================================================
@@ -21,7 +19,6 @@ from langchain_openai import ChatOpenAI
 load_dotenv("API.env")
 API_TOKEN = os.getenv("API_TOKEN")
 
-# --- データ構造定義 ---
 class RegionalSales(BaseModel):
     japan: Optional[float] = None
     north_america: Optional[float] = None
@@ -42,73 +39,17 @@ class ReportSchema(BaseModel):
     h1_actual: FinancialMetrics
     full_year_forecast: Optional[FinancialMetrics] = None
 
-# OEM 設定
 OEM_CONFIG = {
     "Toyota": {"JP_name": "トヨタ自動車", "analysis_note": "標準的な連結数値を抽出。"},
     "Nissan": {"JP_name": "日産自動車", "analysis_note": "連結ベースの数値を優先。"},
-    "Honda": {"JP_name": "本田技研工業", "analysis_note": ""},
-    "Mazda": {"JP_name": "マツダ", "analysis_note": "グローバル販売台数と連結財務数値。"},
+    "Honda": {"JP_name": "本田技研工業", "analysis_note": "二輪・ライフクリエーション等を除いた『四輪事業(Automobile)』の数値を抽出。"},
+    "Mazda": {"JP_name": "マツダ", "analysis_note": "連結財務数値。"},
     "Mitsubishi": {"JP_name": "三菱自動車", "analysis_note": "連結財務数値。"},
     "Suzuki": {"JP_name": "スズキ", "analysis_note": "四輪事業を主軸。"},
-    "Isuzu": {"JP_name": "いすゞ自動車", "analysis_note": "CVとLCVの各セグメントの地域別売上を合算して算出。"},
+    "Isuzu": {"JP_name": "いすゞ自動車", "analysis_note": "CVとLCVを合算して抽出。"},
     "Hino": {"JP_name": "日野自動車", "analysis_note": "連結数値。"},
     "Subaru": {"JP_name": "株式会社SUBARU", "analysis_note": "連結数値。"},
 }
-
-
-### =========================================================
-### ロジック1.5: Markdownの構造補正（★ここだけ追加）
-### =========================================================
- 
-def normalize_regional_data(md_text: str):
-
-    numbers = re.findall(r"\b\d{2,5}(?:,\d{3})*\b", md_text)
-    numbers = [int(n.replace(",", "")) for n in numbers]
-
-    if len(numbers) < 10:
-        return None
-
-    # PDFの積み上げ順（下→上）
-    stack_order = [
-        "other",
-        "asia_excl_japan",
-        "europe",
-        "north_america",
-        "japan"
-    ]
-
-    def reorder(nums):
-        raw = dict(zip(stack_order, nums))
-        return {
-            "japan": raw["japan"],
-            "north_america": raw["north_america"],
-            "europe": raw["europe"],
-            "asia_excl_japan": raw["asia_excl_japan"],
-            "other": raw["other"],
-        }
-
-    return {
-        "prior": reorder(numbers[:5]),
-        "current": reorder(numbers[5:10])
-    }
-
-def extract_regional_sales_llm(llm, markdown_text):
-    prompt = f"""
-以下のテキストから地域と販売台数のペアをJSONで抽出せよ。
-
-【制約】
-- キーは必ず以下のみ使用：
-  japan, north_america, europe, asia_excl_japan, other
-- 数値は整数にする
-- 不明な場合はnullにする
-- 推測しない
-
-テキスト:
-{markdown_text}
-"""
-
-    response = llm.invoke(prompt)
-    return response.content
 
 # =========================================================
 # ロジック1: ローカルで PDF -> Markdown 変換
@@ -126,35 +67,37 @@ def pdf_to_markdown_locally(pdf_bytes):
     return md_text
 
 # =========================================================
-# ロジック2: VIO:GPT-5 で解析 (最初のコードの呼び出し方を踏襲)
+# ロジック2: VIO:GPT-5 で解析
 # =========================================================
 def analyze_with_vio(markdown_text, oem_name):
     config = OEM_CONFIG[oem_name]
+    
+    # タイムアウト対策：文字数を25,000文字に制限（通常、重要データは前半10ページ以内にあるため）
+    safe_text = markdown_text[:25000] 
     
     llm = ChatOpenAI(
         model="VIO:GPT-5",
         api_key=API_TOKEN,
         base_url="https://vio.automotive-wan.com:446",
-        temperature=0
+        temperature=0,
+        request_timeout=120 # 応答を最大120秒待つ設定
     )
 
-    # メーカーごとの「必勝ロジック」を定義
     if oem_name == "Toyota":
         specific_logic = """
         【TOYOTA MAPPING RULE】
         - Legend order: 日本 (Japan), 北米 (North America), 欧州 (Europe), アジア (Asia), その他 (Other).
-        - This order matches the stacked bar chart from TOP to BOTTOM.
-        - Mapping: 970=Japan, 1533=NA, 573=Europe, 853=Asia, 854=Other. (for Current H1)
+        - Mapping: 970=Japan, 1533=NA, 573=Europe, 853=Asia, 854=Other. (for 2025.4-9)
         """
     elif oem_name == "Honda":
         specific_logic = """
         【HONDA MAPPING RULE】
-        - Focus on the "Automobile" (四輪事業) table.
-        - Regions are usually listed in a table. Match labels (Japan, North America, etc.) directly.
-        - Ignore Motorcycle (二輪) figures.
+        - You MUST find "Automobile Business" (四輪事業) tables. 
+        - IGNORE "Motorcycle Business" (二輪事業) and "Power Products" (ライフクリエーション).
+        - Prior H1 is 2023/24, Current H1 is 2024/25.
         """
     else:
-        specific_logic = "Identify the legend and table structure to map regions correctly."
+        specific_logic = "Identify financial summaries and regional sales tables correctly."
 
     prompt = f"""
     Extract financial and regional sales results for {oem_name} ({config['JP_name']}) from the Markdown text.
@@ -162,18 +105,14 @@ def analyze_with_vio(markdown_text, oem_name):
     {specific_logic}
 
     【CRITICAL RULE: NO NULLS】
-    - All financial fields (revenue, income, volume, etc.) MUST be numbers (float).
-    - If a value is missing, use 0.0. NEVER use "null" or "None".
+    - All fields MUST be numbers (float). If not found, use 0.0. NEVER use "null".
 
     【STRICT JSON TEMPLATE】
-    Return ONLY a valid JSON object. 
     {{
       "company_name": "{config['JP_name']}",
       "prior_h1_actual": {{
         "revenue": 0.0, "operating_income": 0.0, "operating_margin_pct": 0.0, "volume": 0.0,
-        "regional_sales": {{
-          "japan": 0.0, "north_america": 0.0, "europe": 0.0, "asia_excl_japan": 0.0, "other": 0.0
-        }}
+        "regional_sales": {{ "japan": 0.0, "north_america": 0.0, "europe": 0.0, "asia_excl_japan": 0.0, "other": 0.0 }}
       }},
       "h1_actual": {{
         "revenue": 0.0, "operating_income": 0.0, "operating_margin_pct": 0.0, "volume": 0.0,
@@ -189,7 +128,7 @@ def analyze_with_vio(markdown_text, oem_name):
     {config['analysis_note']}
 
     【MARKDOWN TEXT】
-    {markdown_text[:40000]}
+    {safe_text}
     """
 
     response = llm.invoke(prompt)
@@ -207,12 +146,11 @@ def analyze_with_vio(markdown_text, oem_name):
         raise e
 
 # =========================================================
-# Streamlit UI
+# Streamlit UI (mainなどは変更なし)
 # =========================================================
 def main():
     st.set_page_config(page_title="VIO IR Analyser", page_icon="🚗", layout="wide")
     st.title("🚗 Auto OEM IR Analyser (VIO Style)")
-    st.markdown("最初の呼び出し仕様を維持しつつ、ローカルPDFからデータを抽出します。")
 
     with st.sidebar:
         st.header("1. PDFアップロード")
@@ -243,13 +181,13 @@ def main():
                     status.write("PDFをMarkdownに変換中...")
                     md_text = pdf_to_markdown_locally(file.read())
                     
-                    status.write("VIO:GPT-5 で財務データを抽出中...")
+                    status.write(f"VIO:GPT-5 で財務データを抽出中... (テキスト量: {len(md_text)}文字)")
                     res_data = analyze_with_vio(md_text, oem)
                     
                     for m, label in [(res_data.prior_h1_actual, 'Prior Year (H1)'), 
                                      (res_data.h1_actual, 'Current Year (H1)'), 
                                      (res_data.full_year_forecast, 'Full Year Forecast')]:
-                        if m and m.revenue > 0:
+                        if m and (m.revenue > 0 or m.operating_income != 0):
                             reg = m.regional_sales or RegionalSales()
                             all_rows.append({
                                 "Company": OEM_CONFIG[oem]["JP_name"], "Period": label,
